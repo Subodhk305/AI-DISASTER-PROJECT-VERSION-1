@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: disaster-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password123
+    networks:
+      - disaster-network
+
+  backend-gateway:
+    build:
+      context: ./backend-gateway
+      dockerfile: Dockerfile
+    container_name: disaster-backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGODB_URL=mongodb://admin:password123@mongodb:27017
+      - DATABASE_NAME=disaster_system
+    env_file:
+      - ./backend-gateway/.env
+    networks:
+      - disaster-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: disaster-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend-gateway
+    networks:
+      - disaster-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  disaster-network:
+    driver: bridge
