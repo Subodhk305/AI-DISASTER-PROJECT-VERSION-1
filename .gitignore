@@ -10,3 +10,5 @@ node_modules/
 *.pt
 *.pkl
 *.json
+backend_code.txt
+frontend_code.txt
