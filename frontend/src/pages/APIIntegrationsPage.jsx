@@ -8,7 +8,7 @@ export default function APIIntegrationsPage() {
     { id: 2, name: 'IRIS Waveform API', status: 'connected', lastSync: '2026-03-24 09:45:00', endpoint: 'https://service.iris.edu/fdsnws/dataselect/1/', apiKey: '••••••••••••••••', type: 'waveform' },
     { id: 3, name: 'Open-Meteo Weather API', status: 'connected', lastSync: '2026-03-24 10:15:00', endpoint: 'https://api.open-meteo.com/v1/forecast', apiKey: '••••••••••••••••', type: 'weather' },
     { id: 4, name: 'NOAA Flood API', status: 'error', lastSync: '2026-03-23 14:20:00', endpoint: 'https://api.weather.gov/alerts', apiKey: '••••••••••••••••', type: 'flood', error: 'Connection timeout' },
-    { id: 5, name: 'Google Maps API', status: 'connected', lastSync: '2026-03-24 10:00:00', endpoint: 'https://maps.googleapis.com/maps/api', apiKey: 'AIzaSyCxEPlv9QT80tJOyVkLebg50lt0jjLsFms', type: 'map' },
+    { id: 5, name: 'Google Maps API', status: 'connected', lastSync: '2026-03-24 10:00:00', endpoint: 'https://maps.googleapis.com/maps/api', apiKey:, type: 'map' },
   ]);
 
   const [editingId, setEditingId] = useState(null);
