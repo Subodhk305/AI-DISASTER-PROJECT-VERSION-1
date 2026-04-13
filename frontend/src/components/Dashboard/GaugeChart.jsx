@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 
-export default function GaugeChart({ value, max = 100, color = '#00D4FF', unit = '%' }) {
+export default function GaugeChart({ value, color = '#00D4FF' }) {
   const canvasRef = useRef(null);
-  const percentage = Math.min(100, (value / max) * 100);
+  const percentage = Math.min(100, value);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -39,12 +39,12 @@ export default function GaugeChart({ value, max = 100, color = '#00D4FF', unit =
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${value.toFixed(1)}${unit}`, centerX, centerY - 15);
+    ctx.fillText(`${value.toFixed(1)}%`, centerX, centerY - 15);
 
     ctx.font = '10px monospace';
     ctx.fillStyle = '#64748B';
-    ctx.fillText(unit === '%' ? 'Probability' : 'Intensity', centerX, centerY + 10);
-  }, [value, max, color, unit, percentage]);
+    ctx.fillText('Probability', centerX, centerY + 10);
+  }, [value, color, percentage]);
 
   return <canvas ref={canvasRef} width={150} height={120} className="w-full" />;
 }

@@ -5,10 +5,29 @@ class WebSocketService {
     this.statusListeners = new Set();
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
+    this.mockInterval = null;
   }
 
   connect() {
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
+    // Use mock WebSocket for now
+    console.log('📡 Using mock WebSocket (no actual connection)');
+    this.notifyStatus('connected');
+    
+    // Simulate periodic alerts
+    this.mockInterval = setInterval(() => {
+      const alerts = [
+        { type: 'alert', severity: 'medium', message: '⚠️ New earthquake activity detected', timestamp: new Date().toISOString() },
+        { type: 'alert', severity: 'low', message: '🌧️ Light rainfall expected in your area', timestamp: new Date().toISOString() }
+      ];
+      const randomAlert = alerts[Math.floor(Math.random() * alerts.length)];
+      this.handleMessage(randomAlert);
+    }, 30000); // Every 30 seconds
+    
+    return;
+    
+    // Real WebSocket connection (commented out)
+    /*
+    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8001';
     const token = localStorage.getItem('token');
     
     if (!token) {
@@ -48,6 +67,7 @@ class WebSocketService {
       console.error('Failed to connect WebSocket:', error);
       this.reconnect();
     }
+    */
   }
 
   handleMessage(data) {
@@ -103,6 +123,9 @@ class WebSocketService {
   }
 
   disconnect() {
+    if (this.mockInterval) {
+      clearInterval(this.mockInterval);
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -110,7 +133,7 @@ class WebSocketService {
   }
 
   isConnected() {
-    return this.ws && this.ws.readyState === WebSocket.OPEN;
+    return true; // Mock is always connected
   }
 }
 

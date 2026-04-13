@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.env
+*.log
+*.db
+node_modules/
+*.csv
+*.npy
+*.pt
+*.pkl
+*.json

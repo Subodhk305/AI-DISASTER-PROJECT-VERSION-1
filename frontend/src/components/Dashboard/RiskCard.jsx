@@ -1,62 +1,40 @@
+import React from 'react';
 import { motion } from 'framer-motion';
 import { TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
 import GaugeChart from './GaugeChart';
 
-export default function RiskCard({ title, icon, probability, riskLevel, magnitudeClass, confidence, color, isRainfall = false }) {
+export default function RiskCard({ title, probability, riskLevel, icon: Icon, color }) {
   const getRiskColor = () => {
-    switch (riskLevel?.toLowerCase()) {
-      case 'high': return '#FF3B5C';
-      case 'medium': return '#FFB020';
-      case 'low': return '#00E57A';
-      default: return '#00D4FF';
-    }
+    if (riskLevel === 'High') return '#FF3B5C';
+    if (riskLevel === 'Medium') return '#FFB020';
+    return '#00E57A';
   };
 
   const getRiskIcon = () => {
-    switch (riskLevel?.toLowerCase()) {
-      case 'high': return <TrendingUp size={16} />;
-      case 'medium': return <AlertTriangle size={16} />;
-      default: return <TrendingDown size={16} />;
-    }
+    if (riskLevel === 'High') return <TrendingUp size={16} />;
+    if (riskLevel === 'Medium') return <AlertTriangle size={16} />;
+    return <TrendingDown size={16} />;
   };
-
-  const displayValue = isRainfall ? probability : probability * 100;
-  const unit = isRainfall ? 'mm/day' : '%';
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="glass rounded-xl p-6 border border-[#1A2540] hover:border-[#00D4FF]/30 transition-all"
+      className="glass-card rounded-2xl p-6"
     >
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="p-2 rounded-lg" style={{ background: `${color}20`, color }}>
-            {icon}
-          </div>
-          <h3 className="text-sm font-semibold text-white">{title}</h3>
+        <div className={`w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center`}>
+          <Icon size={24} style={{ color }} />
         </div>
         <div className="flex items-center gap-1 text-xs" style={{ color: getRiskColor() }}>
           {getRiskIcon()}
-          <span className="font-mono">{riskLevel || 'Unknown'}</span>
+          <span className="font-mono">{riskLevel}</span>
         </div>
       </div>
-
-      <div className="flex justify-center mb-4">
-        <GaugeChart value={displayValue} max={isRainfall ? 200 : 100} color={color} unit={unit} />
-      </div>
-
-      <div className="space-y-2 text-center">
-        <div className="flex justify-between text-xs">
-          <span className="text-gray-500">Estimate</span>
-          <span className="text-white font-mono">{magnitudeClass || 'N/A'}</span>
-        </div>
-        {confidence && (
-          <div className="flex justify-between text-xs">
-            <span className="text-gray-500">Confidence</span>
-            <span className="text-white font-mono">{(confidence * 100).toFixed(1)}%</span>
-          </div>
-        )}
+      <h3 className="text-gray-400 text-sm">{title}</h3>
+      <p className="text-2xl font-bold text-white mt-1">{probability}%</p>
+      <div className="mt-4">
+        <GaugeChart value={probability} color={color} />
       </div>
     </motion.div>
   );

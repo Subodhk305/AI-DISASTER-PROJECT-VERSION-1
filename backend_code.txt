@@ -1,0 +1,1528 @@
+
+
+===== FILE: D:\ai-disaster-system\backend-gateway\.env =====
+
+# Server
+DEBUG=True
+SECRET_KEY=your-super-secret-key-change-this-in-production
+
+# Database
+MONGODB_URL=mongodb://localhost:27017
+DATABASE_NAME=disaster_system
+
+# ML Services (Update with actual IPs of your laptops)
+# Your laptop - Earthquake model (running on port 8000)
+EARTHQUAKE_API_URL=http://localhost:8000
+
+# Teammate 1 - Rainfall model (IP: 10.167.123.13, Port: 8002)
+RAINFALL_API_URL=http://10.167.123.13:8002
+
+# Teammate 2 - Flood model (IP: 10.167.123.97, Port: 8003)
+FLOOD_API_URL=http://10.167.123.97:8003
+
+# Email (Configure for production)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+EMAIL_FROM=alerts@disaster-system.com
+
+# Alert Thresholds
+EARTHQUAKE_THRESHOLD=0.6
+RAINFALL_THRESHOLD=50
+FLOOD_THRESHOLD=0.6
+
+===== FILE: D:\ai-disaster-system\backend-gateway\requirements.txt =====
+
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic[email]==2.5.0
+pydantic-settings==2.1.0
+motor==3.3.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+aiohttp==3.9.1
+python-dotenv==1.0.0
+httpx==0.25.2
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\config.py =====
+
+from pydantic_settings import BaseSettings
+from typing import Optional
+import os
+
+class Settings(BaseSettings):
+    APP_NAME: str = "AI Unified Disaster System"
+    DEBUG: bool = True
+    
+    # Database
+    MONGODB_URL: str = "mongodb://localhost:27017"
+    DATABASE_NAME: str = "disaster_system"
+    
+    # JWT
+    SECRET_KEY: str = "your-secret-key-change-in-production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    
+    # ML Services URLs - UPDATE WITH YOUR ACTUAL IPs
+    # Your laptop (Earthquake model - port 8000)
+    EARTHQUAKE_API_URL: str = os.getenv("EARTHQUAKE_API_URL", "http://localhost:8000")
+    
+    # Teammate 1 - Rainfall model (IP: 10.167.123.13, Port: 8002)
+    RAINFALL_API_URL: str = os.getenv("RAINFALL_API_URL", "http://10.167.123.13:8002")
+    
+    # Teammate 2 - Flood model (IP: 10.167.123.97, Port: 8003)
+    FLOOD_API_URL: str = os.getenv("FLOOD_API_URL", "http://10.167.123.97:8003")
+    
+    # Email
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAIL_FROM: str = "alerts@disaster-system.com"
+    
+    # Alert thresholds
+    EARTHQUAKE_THRESHOLD: float = 0.6
+    RAINFALL_THRESHOLD: float = 50.0
+    FLOOD_THRESHOLD: float = 0.6
+    
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\main.py =====
+
+# backend-gateway/app/main.py
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
+import aiohttp
+import asyncio
+import jwt
+import bcrypt
+import uuid
+import logging
+
+from app.config import settings
+
+app = FastAPI(title="AI Unified Disaster System", version="1.0.0")
+security = HTTPBearer()
+logger = logging.getLogger(__name__)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:5174"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Use settings from config.py
+EARTHQUAKE_API_URL = settings.EARTHQUAKE_API_URL
+RAINFALL_API_URL = settings.RAINFALL_API_URL
+FLOOD_API_URL = settings.FLOOD_API_URL
+
+# Mock database
+users_db = {}
+alerts_db = []
+resources_db = [
+    {"id": "1", "name": "Tents", "quantity": 150, "threshold": 50, "region": "Mumbai", "allocated": 30},
+    {"id": "2", "name": "Food Packages", "quantity": 500, "threshold": 200, "region": "Mumbai", "allocated": 100},
+    {"id": "3", "name": "Medical Kits", "quantity": 75, "threshold": 30, "region": "Delhi", "allocated": 20},
+    {"id": "4", "name": "Water Bottles", "quantity": 1000, "threshold": 300, "region": "Delhi", "allocated": 250},
+]
+volunteers_db = [
+    {"id": "1", "name": "John Doe", "email": "john@example.com", "phone": "+91 98765 43210", "location": "Mumbai", "skills": ["First Aid", "Rescue"], "status": "available"},
+    {"id": "2", "name": "Jane Smith", "email": "jane@example.com", "phone": "+91 98765 43211", "location": "Delhi", "skills": ["Logistics", "Communication"], "status": "available"},
+]
+
+# ==================== Pydantic Models ====================
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    role: str = "user"
+    phone: Optional[str] = None
+    location: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
+
+class PredictionRequest(BaseModel):
+    lat: float
+    lng: float
+    location: str
+
+class EarthquakePrediction(BaseModel):
+    status: str
+    risk_probability: float
+    risk_level: str
+    magnitude_class: Optional[str] = None
+    confidence: Optional[float] = None
+    timestamp: Optional[str] = None
+    error: Optional[str] = None
+
+class RainfallPrediction(BaseModel):
+    status: str
+    rainfall_mm: float
+    risk_probability: float
+    risk_level: str
+    confidence: Optional[float] = None
+    timestamp: Optional[str] = None
+
+class FloodPrediction(BaseModel):
+    status: str
+    risk_probability: float
+    risk_level: str
+    severity: Optional[str] = None
+    confidence: Optional[float] = None
+    timestamp: Optional[str] = None
+
+class PredictionResponse(BaseModel):
+    earthquake: EarthquakePrediction
+    rainfall: RainfallPrediction
+    flood: FloodPrediction
+    overall_risk: float
+    location: str
+    lat: float
+    lng: float
+
+class AlertCreate(BaseModel):
+    message: str
+    severity: str
+    type: str
+
+class AlertResponse(BaseModel):
+    id: str
+    message: str
+    severity: str
+    type: str
+    read: bool
+    created_at: str
+
+class ResourceCreate(BaseModel):
+    name: str
+    quantity: int
+    threshold: int
+    region: str
+
+class ResourceResponse(BaseModel):
+    id: str
+    name: str
+    quantity: int
+    threshold: int
+    region: str
+    allocated: int
+
+class VolunteerCreate(BaseModel):
+    name: str
+    email: str
+    phone: str
+    location: str
+    skills: List[str] = []
+
+class VolunteerResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone: str
+    location: str
+    skills: List[str]
+    status: str
+
+# ==================== Helper Functions ====================
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except jwt.PyJWTError:
+        return None
+
+# ==================== Auth Endpoints ====================
+
+@app.post("/api/auth/register", response_model=TokenResponse)
+async def register(user_data: RegisterRequest):
+    if user_data.email in users_db:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    salt = bcrypt.gensalt()
+    password_hash = bcrypt.hashpw(user_data.password.encode(), salt).decode()
+    
+    user_id = str(uuid.uuid4())
+    user = {
+        "id": user_id,
+        "name": user_data.name,
+        "email": user_data.email,
+        "password_hash": password_hash,
+        "role": user_data.role,
+        "phone": user_data.phone,
+        "location": user_data.location,
+        "created_at": datetime.utcnow().isoformat()
+    }
+    users_db[user_data.email] = user
+    
+    access_token = create_access_token(data={"sub": user_id, "role": user_data.role})
+    
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse(
+            id=user_id,
+            name=user_data.name,
+            email=user_data.email,
+            role=user_data.role
+        )
+    )
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+async def login(credentials: LoginRequest):
+    if credentials.email == "admin@disaster.com" and credentials.password == "admin123":
+        user = {"id": "1", "name": "Admin User", "email": "admin@disaster.com", "role": "admin"}
+        access_token = create_access_token(data={"sub": user["id"], "role": user["role"]})
+        return TokenResponse(access_token=access_token, token_type="bearer", user=UserResponse(**user))
+    
+    if credentials.email == "user@example.com" and credentials.password == "user123":
+        user = {"id": "2", "name": "Test User", "email": "user@example.com", "role": "user"}
+        access_token = create_access_token(data={"sub": user["id"], "role": user["role"]})
+        return TokenResponse(access_token=access_token, token_type="bearer", user=UserResponse(**user))
+    
+    user = users_db.get(credentials.email)
+    if user and bcrypt.checkpw(credentials.password.encode(), user["password_hash"].encode()):
+        access_token = create_access_token(data={"sub": user["id"], "role": user["role"]})
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserResponse(
+                id=user["id"],
+                name=user["name"],
+                email=user["email"],
+                role=user["role"]
+            )
+        )
+    
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    for user in users_db.values():
+        if user["id"] == payload["sub"]:
+            return UserResponse(
+                id=user["id"],
+                name=user["name"],
+                email=user["email"],
+                role=user["role"]
+            )
+    
+    if payload["sub"] == "1":
+        return UserResponse(id="1", name="Admin User", email="admin@disaster.com", role="admin")
+    if payload["sub"] == "2":
+        return UserResponse(id="2", name="Test User", email="user@example.com", role="user")
+    
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.post("/api/auth/logout")
+async def logout():
+    return {"message": "Logged out successfully"}
+
+# ==================== Prediction Endpoints ====================
+
+async def get_earthquake_prediction(lat: float, lng: float, location: str) -> EarthquakePrediction:
+    """Fetch real prediction from earthquake model on your laptop (port 8000)"""
+    try:
+        logger.info(f"📡 Calling Earthquake API at {EARTHQUAKE_API_URL}")
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "latitude": lat,
+                "longitude": lng,
+                "location_name": location,
+                "radius_km": 200,
+                "include_waveform": False
+            }
+            async with session.post(
+                f"{EARTHQUAKE_API_URL}/api/v1/predict",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    logger.info(f"✅ Earthquake API response: probability={data.get('probability', 0)}")
+                    return EarthquakePrediction(
+                        status="success",
+                        risk_probability=data.get("probability", 0),
+                        risk_level=data.get("risk_level", "Low"),
+                        magnitude_class=data.get("predicted_magnitude_class", "unknown"),
+                        confidence=data.get("confidence", 0),
+                        timestamp=datetime.now().isoformat()
+                    )
+                else:
+                    logger.error(f"❌ Earthquake API error: {response.status}")
+                    return EarthquakePrediction(
+                        status="error",
+                        risk_probability=0,
+                        risk_level="Unknown",
+                        error=f"HTTP {response.status}"
+                    )
+    except Exception as e:
+        logger.error(f"❌ Earthquake prediction error: {e}")
+        return EarthquakePrediction(
+            status="error",
+            risk_probability=0,
+            risk_level="Unknown",
+            error=str(e)
+        )
+
+async def get_rainfall_prediction(lat: float, lng: float, location: str) -> RainfallPrediction:
+    """Fetch real prediction from rainfall model on teammate's laptop"""
+    try:
+        # CORRECT ENDPOINT: /api/v1/predict (based on the API documentation)
+        url = f"{RAINFALL_API_URL}/api/v1/predict"
+        logger.info(f"📡 Calling Rainfall API at {url}")
+        
+        async with aiohttp.ClientSession() as session:
+            # Correct payload format from the documentation
+            payload = {
+                "latitude": lat,
+                "longitude": lng,
+                "location_name": location,
+                "forecast_days": 7
+            }
+            logger.info(f"📤 Rainfall payload: {payload}")
+            
+            async with session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    logger.info(f"✅ Rainfall API response: {data}")
+                    
+                    # Extract rainfall data
+                    rainfall_mm = data.get("rainfall_mm") or data.get("rainfall") or data.get("precipitation") or 0
+                    probability = data.get("probability") or data.get("risk_probability") or min(100, rainfall_mm * 2)
+                    risk_level = data.get("risk_level") or ("High" if rainfall_mm > 40 else "Medium" if rainfall_mm > 20 else "Low")
+                    confidence = data.get("confidence") or 0.85
+                    
+                    return RainfallPrediction(
+                        status="success",
+                        rainfall_mm=float(rainfall_mm),
+                        risk_probability=float(probability),
+                        risk_level=risk_level,
+                        confidence=float(confidence),
+                        timestamp=datetime.now().isoformat()
+                    )
+                else:
+                    logger.error(f"❌ Rainfall API error: HTTP {response.status}")
+                    return RainfallPrediction(
+                        status="error",
+                        rainfall_mm=0,
+                        risk_probability=0,
+                        risk_level="Unknown",
+                        error=f"HTTP {response.status}"
+                    )
+    except asyncio.TimeoutError:
+        logger.error(f"❌ Rainfall API timeout")
+        return RainfallPrediction(
+            status="error",
+            rainfall_mm=0,
+            risk_probability=0,
+            risk_level="Unknown",
+            error="Timeout"
+        )
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"❌ Cannot connect to Rainfall API: {e}")
+        return RainfallPrediction(
+            status="error",
+            rainfall_mm=0,
+            risk_probability=0,
+            risk_level="Unknown",
+            error=f"Cannot connect: {e}"
+        )
+    except Exception as e:
+        logger.error(f"❌ Rainfall prediction error: {e}")
+        return RainfallPrediction(
+            status="error",
+            rainfall_mm=0,
+            risk_probability=0,
+            risk_level="Unknown",
+            error=str(e)
+        )
+
+async def get_flood_prediction(lat: float, lng: float, location: str) -> FloodPrediction:
+    """Fetch real prediction from flood model on teammate's laptop"""
+    try:
+        # Try multiple endpoints for flood model
+        endpoints_to_try = [
+            "/api/v1/predict",  # Try this first (if it follows same pattern)
+            "/predict",         # Based on logs, this works (200 OK)
+            "/api/predict",
+            "/flood/predict"
+        ]
+        
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "latitude": lat,
+                "longitude": lng,
+                "location_name": location
+            }
+            logger.info(f"📤 Flood payload: {payload}")
+            
+            for endpoint in endpoints_to_try:
+                url = f"{FLOOD_API_URL}{endpoint}"
+                logger.info(f"📡 Trying Flood endpoint: {url}")
+                
+                try:
+                    async with session.post(
+                        url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            logger.info(f"✅ Flood API response from {endpoint}: {data}")
+                            
+                            probability = data.get("probability") or data.get("risk_probability") or 0
+                            risk_level = data.get("risk_level") or ("High" if probability > 0.6 else "Medium" if probability > 0.3 else "Low")
+                            severity = data.get("severity") or risk_level
+                            confidence = data.get("confidence") or 0.82
+                            
+                            return FloodPrediction(
+                                status="success",
+                                risk_probability=float(probability),
+                                risk_level=risk_level,
+                                severity=severity,
+                                confidence=float(confidence),
+                                timestamp=datetime.now().isoformat()
+                            )
+                        else:
+                            logger.warning(f"⚠️ Flood endpoint {endpoint} returned {response.status}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"⚠️ Flood endpoint {endpoint} timeout")
+                except Exception as e:
+                    logger.warning(f"⚠️ Flood endpoint {endpoint} error: {e}")
+            
+            logger.error(f"❌ All Flood endpoints failed")
+            return FloodPrediction(
+                status="error",
+                risk_probability=0,
+                risk_level="Unknown",
+                severity="Unknown",
+                confidence=0,
+                error="All endpoints failed"
+            )
+    except Exception as e:
+        logger.error(f"❌ Flood prediction error: {e}")
+        return FloodPrediction(
+            status="error",
+            risk_probability=0,
+            risk_level="Unknown",
+            error=str(e)
+        )
+
+@app.post("/api/predictions/unified", response_model=PredictionResponse)
+async def get_unified_predictions(request: PredictionRequest):
+    """Get predictions from all three models running on different laptops"""
+    try:
+        logger.info(f"📍 Received prediction request for {request.location} at ({request.lat}, {request.lng})")
+        
+        # Run all predictions in parallel
+        earthquake_task = get_earthquake_prediction(request.lat, request.lng, request.location)
+        rainfall_task = get_rainfall_prediction(request.lat, request.lng, request.location)
+        flood_task = get_flood_prediction(request.lat, request.lng, request.location)
+        
+        earthquake, rainfall, flood = await asyncio.gather(
+            earthquake_task, rainfall_task, flood_task
+        )
+        
+        # Calculate overall risk (weighted average)
+        overall_risk = (
+            earthquake.risk_probability * 0.4 +
+            (rainfall.risk_probability / 100) * 0.3 +
+            flood.risk_probability * 0.3
+        )
+        
+        logger.info(f"📊 Prediction Summary:")
+        logger.info(f"   🌋 Earthquake: {earthquake.risk_probability*100:.1f}% ({earthquake.status})")
+        logger.info(f"   🌧️ Rainfall: {rainfall.rainfall_mm}mm ({rainfall.status})")
+        logger.info(f"   🌊 Flood: {flood.risk_probability*100:.1f}% ({flood.status})")
+        
+        return PredictionResponse(
+            earthquake=earthquake,
+            rainfall=rainfall,
+            flood=flood,
+            overall_risk=overall_risk,
+            location=request.location,
+            lat=request.lat,
+            lng=request.lng
+        )
+    except Exception as e:
+        logger.error(f"❌ Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Alerts Endpoints ====================
+
+@app.get("/api/alerts", response_model=List[AlertResponse])
+async def get_alerts(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return [AlertResponse(**alert) for alert in alerts_db]
+
+@app.get("/api/alerts/user", response_model=List[AlertResponse])
+async def get_user_alerts(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user_alerts = [a for a in alerts_db if a.get("user_id") == payload["sub"]]
+    return [AlertResponse(**alert) for alert in user_alerts]
+
+@app.put("/api/alerts/{alert_id}/read")
+async def mark_alert_read(alert_id: str, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    for alert in alerts_db:
+        if alert.get("id") == alert_id:
+            alert["read"] = True
+            return {"message": "Alert marked as read"}
+    raise HTTPException(status_code=404, detail="Alert not found")
+
+@app.post("/api/alerts/manual")
+async def create_manual_alert(alert: AlertCreate, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    new_alert = {
+        "id": str(uuid.uuid4()),
+        "message": alert.message,
+        "severity": alert.severity,
+        "type": alert.type,
+        "read": False,
+        "created_at": datetime.now().isoformat(),
+        "user_id": payload["sub"]
+    }
+    alerts_db.append(new_alert)
+    return {"message": "Alert sent successfully"}
+
+# ==================== Resources Endpoints ====================
+
+@app.get("/api/resources", response_model=List[ResourceResponse])
+async def get_resources(region: Optional[str] = None, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if region:
+        filtered = [r for r in resources_db if r["region"].lower() == region.lower()]
+        return [ResourceResponse(**r) for r in filtered]
+    return [ResourceResponse(**r) for r in resources_db]
+
+@app.post("/api/resources", response_model=ResourceResponse)
+async def create_resource(resource: ResourceCreate, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    new_resource = {
+        "id": str(len(resources_db) + 1),
+        "name": resource.name,
+        "quantity": resource.quantity,
+        "threshold": resource.threshold,
+        "region": resource.region,
+        "allocated": 0
+    }
+    resources_db.append(new_resource)
+    return ResourceResponse(**new_resource)
+
+@app.post("/api/resources/{resource_id}/allocate")
+async def allocate_resource(resource_id: str, quantity: int, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    for resource in resources_db:
+        if resource["id"] == resource_id:
+            if resource["quantity"] - resource["allocated"] < quantity:
+                raise HTTPException(status_code=400, detail="Insufficient resources")
+            resource["allocated"] += quantity
+            return {"message": f"Allocated {quantity} units", "remaining": resource["quantity"] - resource["allocated"]}
+    raise HTTPException(status_code=404, detail="Resource not found")
+
+# ==================== Volunteers Endpoints ====================
+
+@app.get("/api/volunteers", response_model=List[VolunteerResponse])
+async def get_volunteers(location: Optional[str] = None, status: Optional[str] = None, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    result = volunteers_db
+    if location:
+        result = [v for v in result if location.lower() in v["location"].lower()]
+    if status:
+        result = [v for v in result if v["status"] == status]
+    return [VolunteerResponse(**v) for v in result]
+
+@app.post("/api/volunteers/register", response_model=VolunteerResponse)
+async def register_volunteer(volunteer: VolunteerCreate, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    new_volunteer = {
+        "id": str(len(volunteers_db) + 1),
+        "name": volunteer.name,
+        "email": volunteer.email,
+        "phone": volunteer.phone,
+        "location": volunteer.location,
+        "skills": volunteer.skills,
+        "status": "available"
+    }
+    volunteers_db.append(new_volunteer)
+    return VolunteerResponse(**new_volunteer)
+
+@app.post("/api/volunteers/{volunteer_id}/assign")
+async def assign_volunteer(volunteer_id: str, task: str, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    for volunteer in volunteers_db:
+        if volunteer["id"] == volunteer_id and volunteer["status"] == "available":
+            volunteer["status"] = "assigned"
+            volunteer["assigned_task"] = task
+            return {"message": f"Volunteer assigned to task: {task}"}
+    raise HTTPException(status_code=404, detail="Volunteer not available")
+
+# ==================== Health Check ====================
+
+@app.get("/api/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.get("/")
+async def root():
+    return {
+        "service": "AI Unified Disaster Prediction System",
+        "version": "1.0.0",
+        "status": "operational",
+        "endpoints": ["/api/auth", "/api/predictions", "/api/alerts", "/api/resources", "/api/volunteers"]
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\__init__.py =====
+
+
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\models\alert.py =====
+
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel
+
+class Alert(BaseModel):
+    id: str
+    user_id: str
+    message: str
+    severity: str  # low, medium, high
+    type: str  # earthquake, rainfall, flood
+    location: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    read: bool = False
+    created_at: datetime = datetime.utcnow()
+    sent_at: Optional[datetime] = None
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\models\resource.py =====
+
+from datetime import datetime
+from typing import List
+from pydantic import BaseModel
+
+class Resource(BaseModel):
+    id: str
+    name: str
+    quantity: int
+    threshold: int
+    region: str
+    allocated: int = 0
+    updated_at: datetime = datetime.utcnow()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\models\user.py =====
+
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, EmailStr
+
+class User(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    password_hash: str
+    role: str  # admin, user, volunteer, emergency_provider
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    created_at: datetime = datetime.utcnow()
+    updated_at: datetime = datetime.utcnow()
+    is_active: bool = True
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\models\volunteer.py =====
+
+from datetime import datetime
+from typing import List, Optional
+from pydantic import BaseModel, EmailStr
+
+class Volunteer(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    phone: str
+    location: str
+    skills: List[str] = []
+    status: str = "available"  # available, assigned, busy
+    assigned_task: Optional[str] = None
+    registered_at: datetime = datetime.utcnow()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\routes\alerts.py =====
+
+from fastapi import APIRouter, HTTPException, Depends
+from typing import List
+from datetime import datetime
+
+from app.schemas.schemas import AlertCreate, AlertResponse
+from app.services.alert_service import alert_service
+from app.utils.database import db
+from app.routes.auth import verify_token, security
+
+router = APIRouter()
+
+@router.get("/", response_model=List[AlertResponse])
+async def get_all_alerts(credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    alerts = await db.alerts.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(100)
+    return [AlertResponse(**alert) for alert in alerts]
+
+@router.get("/user", response_model=List[AlertResponse])
+async def get_user_alerts(credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    alerts = await db.alerts.find({"user_id": payload["sub"], "read": False}).sort("created_at", -1).to_list(50)
+    return [AlertResponse(**alert) for alert in alerts]
+
+@router.put("/{alert_id}/read")
+async def mark_alert_read(alert_id: str, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    result = await db.alerts.update_one(
+        {"id": alert_id, "user_id": payload["sub"]},
+        {"$set": {"read": True, "read_at": datetime.utcnow()}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    
+    return {"message": "Alert marked as read"}
+
+@router.post("/manual")
+async def create_manual_alert(alert: AlertCreate, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    user = await db.users.find_one({"_id": payload["sub"]})
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    await alert_service.send_alert_to_all(alert.message, alert.severity, alert.type)
+    
+    return {"message": "Alert sent successfully"}
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\routes\auth.py =====
+
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from datetime import datetime, timedelta
+import jwt
+import bcrypt
+from typing import Optional
+
+from app.config import settings
+from app.schemas.schemas import UserCreate, UserLogin, UserResponse, Token
+from app.utils.database import db
+
+router = APIRouter()
+security = HTTPBearer()
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except jwt.PyJWTError:
+        return None
+
+@router.post("/register", response_model=UserResponse)
+async def register(user_data: UserCreate):
+    # Check if user exists
+    existing = await db.users.find_one({"email": user_data.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Hash password
+    salt = bcrypt.gensalt()
+    password_hash = bcrypt.hashpw(user_data.password.encode(), salt).decode()
+    
+    # Create user
+    user = {
+        "name": user_data.name,
+        "email": user_data.email,
+        "password_hash": password_hash,
+        "role": user_data.role,
+        "phone": user_data.phone,
+        "location": user_data.location,
+        "created_at": datetime.utcnow(),
+        "is_active": True
+    }
+    
+    result = await db.users.insert_one(user)
+    user["id"] = str(result.inserted_id)
+    
+    return UserResponse(
+        id=str(result.inserted_id),
+        name=user_data.name,
+        email=user_data.email,
+        role=user_data.role
+    )
+
+@router.post("/login", response_model=Token)
+async def login(credentials: UserLogin):
+    user = await db.users.find_one({"email": credentials.email})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    if not bcrypt.checkpw(credentials.password.encode(), user["password_hash"].encode()):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    access_token = create_access_token(data={"sub": str(user["_id"]), "role": user["role"]})
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse(
+            id=str(user["_id"]),
+            name=user["name"],
+            email=user["email"],
+            role=user["role"]
+        )
+    )
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    user = await db.users.find_one({"_id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return UserResponse(
+        id=str(user["_id"]),
+        name=user["name"],
+        email=user["email"],
+        role=user["role"]
+    )
+
+@router.post("/logout")
+async def logout():
+    return {"message": "Logged out successfully"}
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\routes\predictions.py =====
+
+from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional
+import aiohttp
+import asyncio
+
+from app.config import settings
+from app.schemas.schemas import UnifiedPredictionRequest, UnifiedPredictionResponse
+from app.services.prediction_service import prediction_service
+
+router = APIRouter()
+
+@router.post("/unified", response_model=UnifiedPredictionResponse)
+async def get_unified_predictions(request: UnifiedPredictionRequest):
+    """
+    Get predictions from all three AI models
+    """
+    try:
+        # Run all predictions in parallel
+        earthquake_task = prediction_service.get_earthquake_prediction(request.lat, request.lng, request.location)
+        rainfall_task = prediction_service.get_rainfall_prediction(request.lat, request.lng, request.location)
+        flood_task = prediction_service.get_flood_prediction(request.lat, request.lng, request.location)
+        
+        earthquake, rainfall, flood = await asyncio.gather(
+            earthquake_task, rainfall_task, flood_task
+        )
+        
+        # Calculate overall risk
+        overall_risk = (
+            earthquake.get("risk_probability", 0) * 0.4 +
+            (rainfall.get("risk_probability", 0) / 100) * 0.3 +
+            flood.get("risk_probability", 0) * 0.3
+        )
+        
+        return UnifiedPredictionResponse(
+            earthquake=earthquake,
+            rainfall=rainfall,
+            flood=flood,
+            overall_risk=overall_risk,
+            location=request.location,
+            lat=request.lat,
+            lng=request.lng
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\routes\resources.py =====
+
+from fastapi import APIRouter, HTTPException, Depends
+from typing import List
+from datetime import datetime
+
+from app.schemas.schemas import ResourceCreate, ResourceResponse
+from app.utils.database import db
+from app.routes.auth import verify_token, security
+from app.services.allocation_service import allocation_service
+
+router = APIRouter()
+
+@router.get("/", response_model=List[ResourceResponse])
+async def get_resources(region: str = None, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    query = {}
+    if region:
+        query["region"] = region
+    
+    resources = await db.resources.find(query).to_list(100)
+    return [ResourceResponse(**r) for r in resources]
+
+@router.post("/", response_model=ResourceResponse)
+async def create_resource(resource: ResourceCreate, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    user = await db.users.find_one({"_id": payload["sub"]})
+    if user["role"] not in ["admin", "emergency_provider"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    resource_dict = resource.dict()
+    resource_dict["id"] = str(datetime.utcnow().timestamp())
+    resource_dict["allocated"] = 0
+    resource_dict["updated_at"] = datetime.utcnow()
+    
+    await db.resources.insert_one(resource_dict)
+    return ResourceResponse(**resource_dict)
+
+@router.post("/{resource_id}/allocate")
+async def allocate_resource(resource_id: str, quantity: int, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    result = await allocation_service.allocate(resource_id, quantity)
+    return result
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\routes\volunteers.py =====
+
+from fastapi import APIRouter, HTTPException, Depends
+from typing import List
+from datetime import datetime
+
+from app.schemas.schemas import VolunteerCreate, VolunteerResponse
+from app.utils.database import db
+from app.routes.auth import verify_token, security
+
+router = APIRouter()
+
+@router.get("/", response_model=List[VolunteerResponse])
+async def get_volunteers(location: str = None, status: str = None, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    query = {}
+    if location:
+        query["location"] = {"$regex": location, "$options": "i"}
+    if status:
+        query["status"] = status
+    
+    volunteers = await db.volunteers.find(query).to_list(100)
+    return [VolunteerResponse(**v) for v in volunteers]
+
+@router.post("/register", response_model=VolunteerResponse)
+async def register_volunteer(volunteer: VolunteerCreate, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    volunteer_dict = volunteer.dict()
+    volunteer_dict["id"] = str(datetime.utcnow().timestamp())
+    volunteer_dict["status"] = "available"
+    volunteer_dict["registered_at"] = datetime.utcnow()
+    
+    await db.volunteers.insert_one(volunteer_dict)
+    return VolunteerResponse(**volunteer_dict)
+
+@router.post("/{volunteer_id}/assign")
+async def assign_volunteer(volunteer_id: str, task: str, credentials = Depends(security)):
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    result = await db.volunteers.update_one(
+        {"id": volunteer_id, "status": "available"},
+        {"$set": {"status": "assigned", "assigned_task": task, "assigned_at": datetime.utcnow()}}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Volunteer not available")
+    
+    return {"message": "Volunteer assigned successfully"}
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\schemas\schemas.py =====
+
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List, Any
+from datetime import datetime
+
+# Auth
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: str = "user"
+    phone: Optional[str] = None
+    location: Optional[str] = None
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    role: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
+
+# Predictions
+class UnifiedPredictionRequest(BaseModel):
+    lat: float
+    lng: float
+    location: str
+
+class EarthquakePrediction(BaseModel):
+    status: str
+    risk_probability: float
+    risk_level: str
+    magnitude_class: Optional[str] = None
+    confidence: Optional[float] = None
+    timestamp: Optional[str] = None
+
+class RainfallPrediction(BaseModel):
+    status: str
+    rainfall_mm: float
+    risk_probability: float
+    risk_level: str
+    confidence: Optional[float] = None
+
+class FloodPrediction(BaseModel):
+    status: str
+    risk_probability: float
+    risk_level: str
+    severity: Optional[str] = None
+    confidence: Optional[float] = None
+
+class UnifiedPredictionResponse(BaseModel):
+    earthquake: EarthquakePrediction
+    rainfall: RainfallPrediction
+    flood: FloodPrediction
+    overall_risk: float
+    location: str
+    lat: float
+    lng: float
+
+# Alerts
+class AlertCreate(BaseModel):
+    message: str
+    severity: str
+    type: str
+
+class AlertResponse(BaseModel):
+    id: str
+    message: str
+    severity: str
+    type: str
+    read: bool
+    created_at: datetime
+
+# Resources
+class ResourceCreate(BaseModel):
+    name: str
+    quantity: int
+    threshold: int
+    region: str
+
+class ResourceResponse(BaseModel):
+    id: str
+    name: str
+    quantity: int
+    threshold: int
+    region: str
+    allocated: int
+
+# Volunteers
+class VolunteerCreate(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    location: str
+    skills: List[str] = []
+
+class VolunteerResponse(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    phone: str
+    location: str
+    skills: List[str]
+    status: str
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\services\alert_service.py =====
+
+import asyncio
+from datetime import datetime
+from typing import List
+import logging
+
+from app.config import settings
+from app.utils.database import db
+from app.services.email_service import email_service
+from app.utils.websocket_manager import manager
+
+logger = logging.getLogger(__name__)
+
+class AlertService:
+    async def check_and_send_alerts(self):
+        """Check for high-risk predictions and send alerts"""
+        # This would check predictions for all users
+        pass
+    
+    async def send_alert_to_user(self, user_id: str, message: str, severity: str, alert_type: str, location: str = None):
+        alert = {
+            "id": str(datetime.utcnow().timestamp()),
+            "user_id": user_id,
+            "message": message,
+            "severity": severity,
+            "type": alert_type,
+            "location": location,
+            "read": False,
+            "created_at": datetime.utcnow(),
+            "sent_at": datetime.utcnow()
+        }
+        
+        # Save to database
+        await db.alerts.insert_one(alert)
+        
+        # Send email
+        user = await db.users.find_one({"_id": user_id})
+        if user and user.get("email"):
+            await email_service.send_alert_email(user["email"], message, severity, alert_type)
+        
+        # Send via WebSocket
+        await manager.broadcast({
+            "type": "alert",
+            "message": message,
+            "severity": severity,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        return alert
+    
+    async def send_alert_to_all(self, message: str, severity: str, alert_type: str):
+        users = await db.users.find({"is_active": True}).to_list(1000)
+        for user in users:
+            await self.send_alert_to_user(str(user["_id"]), message, severity, alert_type, None)
+    
+    async def background_alert_checker(self):
+        """Background task to check for alerts"""
+        while True:
+            try:
+                await self.check_and_send_alerts()
+                await asyncio.sleep(60)  # Check every minute
+            except Exception as e:
+                logger.error(f"Alert checker error: {e}")
+                await asyncio.sleep(60)
+
+alert_service = AlertService()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\services\allocation_service.py =====
+
+from typing import Dict
+import logging
+from datetime import datetime
+
+from app.utils.database import db
+
+logger = logging.getLogger(__name__)
+
+class AllocationService:
+    async def allocate(self, resource_id: str, quantity: int) -> Dict:
+        resource = await db.resources.find_one({"id": resource_id})
+        if not resource:
+            return {"error": "Resource not found"}
+        
+        if resource["quantity"] - resource["allocated"] < quantity:
+            return {"error": "Insufficient resources"}
+        
+        result = await db.resources.update_one(
+            {"id": resource_id},
+            {"$inc": {"allocated": quantity}, "$set": {"updated_at": datetime.utcnow()}}
+        )
+        
+        return {"message": f"Allocated {quantity} units", "remaining": resource["quantity"] - resource["allocated"] - quantity}
+
+allocation_service = AllocationService()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\services\email_service.py =====
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import logging
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+class EmailService:
+    async def initialize(self):
+        """Initialize email service"""
+        pass
+    
+    async def send_alert_email(self, to_email: str, message: str, severity: str, alert_type: str):
+        try:
+            # For production, configure SMTP
+            # This is a placeholder - configure your SMTP settings
+            logger.info(f"Sending {severity} alert to {to_email}: {message}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send email: {e}")
+            return False
+
+email_service = EmailService()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\services\prediction_service.py =====
+
+import aiohttp
+import asyncio
+from typing import Dict, Any
+import logging
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+class PredictionService:
+    def __init__(self):
+        self.earthquake_url = settings.EARTHQUAKE_API_URL
+        self.rainfall_url = settings.RAINFALL_API_URL
+        self.flood_url = settings.FLOOD_API_URL
+    
+    async def get_earthquake_prediction(self, lat: float, lng: float, location: str) -> Dict:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.earthquake_url}/predict",
+                    json={"latitude": lat, "longitude": lng, "location_name": location},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    data = await response.json()
+                    return {
+                        "status": "success",
+                        "risk_probability": data.get("probability", 0),
+                        "risk_level": data.get("risk_level", "Low"),
+                        "magnitude_class": data.get("predicted_magnitude_class", "unknown"),
+                        "confidence": data.get("confidence", 0),
+                        "timestamp": data.get("timestamp")
+                    }
+        except Exception as e:
+            logger.error(f"Earthquake prediction error: {e}")
+            return {"status": "error", "risk_probability": 0, "risk_level": "Unknown", "error": str(e)}
+    
+    async def get_rainfall_prediction(self, lat: float, lng: float, location: str) -> Dict:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.rainfall_url}/predict",
+                    json={"lat": lat, "lng": lng, "location": location},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    data = await response.json()
+                    rainfall_mm = data.get("rainfall_mm", 0)
+                    return {
+                        "status": "success",
+                        "rainfall_mm": rainfall_mm,
+                        "risk_probability": min(100, rainfall_mm / 5),
+                        "risk_level": "High" if rainfall_mm > 50 else "Medium" if rainfall_mm > 20 else "Low",
+                        "confidence": data.get("confidence", 0.8),
+                        "timestamp": data.get("timestamp")
+                    }
+        except Exception as e:
+            logger.error(f"Rainfall prediction error: {e}")
+            return {"status": "error", "rainfall_mm": 0, "risk_probability": 0, "risk_level": "Unknown"}
+    
+    async def get_flood_prediction(self, lat: float, lng: float, location: str) -> Dict:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.flood_url}/predict",
+                    json={"latitude": lat, "longitude": lng, "location": location},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    data = await response.json()
+                    return {
+                        "status": "success",
+                        "risk_probability": data.get("probability", 0),
+                        "risk_level": data.get("risk_level", "Low"),
+                        "severity": data.get("severity", "Low"),
+                        "confidence": data.get("confidence", 0),
+                        "timestamp": data.get("timestamp")
+                    }
+        except Exception as e:
+            logger.error(f"Flood prediction error: {e}")
+            return {"status": "error", "risk_probability": 0, "risk_level": "Unknown"}
+
+prediction_service = PredictionService()
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\utils\database.py =====
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from app.config import settings
+
+class Database:
+    client: AsyncIOMotorClient = None
+    db = None
+    
+    async def connect(self):
+        self.client = AsyncIOMotorClient(settings.MONGODB_URL)
+        self.db = self.client[settings.DATABASE_NAME]
+        
+    async def disconnect(self):
+        if self.client:
+            self.client.close()
+
+db = Database()
+
+async def get_db():
+    return db.db
+
+===== FILE: D:\ai-disaster-system\backend-gateway\app\utils\websocket_manager.py =====
+
+from fastapi import WebSocket
+from typing import List, Dict, Set
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.user_connections: Dict[str, Set[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
+    
+    async def send_message(self, message: dict, websocket: WebSocket):
+        try:
+            await websocket.send_text(json.dumps(message))
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+    
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Error broadcasting: {e}")
+    
+    async def handle_message(self, data: str, websocket: WebSocket):
+        try:
+            message = json.loads(data)
+            # Handle different message types
+            if message.get("type") == "ping":
+                await self.send_message({"type": "pong"}, websocket)
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+
+manager = WebSocketManager()

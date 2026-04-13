@@ -15,10 +15,15 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     
-    # ML Services URLs
-    EARTHQUAKE_API_URL: str = os.getenv("EARTHQUAKE_API_URL", "http://localhost:8001")
-    RAINFALL_API_URL: str = os.getenv("RAINFALL_API_URL", "http://localhost:8002")
-    FLOOD_API_URL: str = os.getenv("FLOOD_API_URL", "http://localhost:8003")
+    # ML Services URLs - UPDATE WITH YOUR ACTUAL IPs
+    # Your laptop (Earthquake model - port 8000)
+    EARTHQUAKE_API_URL: str = os.getenv("EARTHQUAKE_API_URL", "http://localhost:8000")
+    
+    # Teammate 1 - Rainfall model (IP: 10.167.123.13, Port: 8002)
+    RAINFALL_API_URL: str = os.getenv("RAINFALL_API_URL", "http://10.167.123.13:8002")
+    
+    # Teammate 2 - Flood model (IP: 10.167.123.97, Port: 8003)
+    FLOOD_API_URL: str = os.getenv("FLOOD_API_URL", "http://10.167.123.97:8003")
     
     # Email
     SMTP_HOST: str = "smtp.gmail.com"
